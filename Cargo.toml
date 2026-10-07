@@ -1,8 +1,8 @@
 [package]
 name = "opendeck-bambu"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "OpenAction/OpenDeck plugin for showing Bambu Lab printer status and remaining time"
+description = "OpenAction/OpenDeck plugin for Bambu Lab printer status, remaining time, pause and resume"
 license = "MIT"
 
 [dependencies]

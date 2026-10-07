@@ -1,8 +1,8 @@
 {
   "Name": "Bambu Status",
-  "Description": "Zeigt den Live-Status und die verbleibende Druckzeit eines Bambu-Lab-Druckers in OpenDeck an.",
+  "Description": "Zeigt Status, Fortschritt und Druckzeit eines Bambu-Lab-Druckers an und erlaubt Pause/Fortsetzen direkt über die Taste.",
   "Author": "spliter90",
-  "Version": "0.1.0",
+  "Version": "0.2.0",
   "Category": "Bambu Lab",
   "Icon": "icon",
   "OS": [
@@ -26,7 +26,7 @@
       "UUID": "de.spliter90.bambu.status",
       "Name": "Druckerstatus",
       "Icon": "action",
-      "Tooltip": "Bambu-Status, Fortschritt und Restzeit anzeigen",
+      "Tooltip": "Bambu-Status und Druckzeit anzeigen; kurz drücken = Pause, 2 Sekunden halten = Fortsetzen",
       "Controllers": ["Keypad"],
       "SupportedInMultiActions": false,
       "PropertyInspectorPath": "pi.html",
