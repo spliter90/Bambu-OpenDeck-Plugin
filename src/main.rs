@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{Duration as ChronoDuration, Local};
 use native_tls::{Protocol, TlsConnector};
 use openaction::*;
@@ -8,10 +9,10 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
-    sync::{watch, Mutex},
+    sync::{mpsc, watch, Mutex},
     task::JoinHandle,
     time::{interval, sleep, MissedTickBehavior},
 };
@@ -94,8 +95,15 @@ struct PrinterSnapshot {
     total_layers: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrinterCommand {
+    Pause,
+    Resume,
+}
+
 struct ConnectionEntry {
     sender: watch::Sender<PrinterSnapshot>,
+    command_tx: mpsc::Sender<PrinterCommand>,
     refs: usize,
     task: JoinHandle<()>,
 }
@@ -109,6 +117,7 @@ struct BindingEntry {
 struct SharedState {
     connections: Mutex<HashMap<PrinterKey, ConnectionEntry>>,
     bindings: Mutex<HashMap<String, BindingEntry>>,
+    presses: Mutex<HashMap<String, Instant>>,
 }
 
 impl SharedState {
@@ -116,10 +125,16 @@ impl SharedState {
         self.unbind(&instance.instance_id).await;
 
         if !settings.valid() {
+            instance
+                .set_image(Some(solid_background_data_url("#424242")), None)
+                .await?;
             instance.set_title(Some("SETUP\nFEHLT"), None).await?;
             return Ok(());
         }
 
+        instance
+            .set_image(Some(solid_background_data_url("#424242")), None)
+            .await?;
         instance.set_title(Some("VERBINDE..."), None).await?;
 
         let key = settings.printer_key();
@@ -130,15 +145,17 @@ impl SharedState {
                 entry.sender.subscribe()
             } else {
                 let (sender, receiver) = watch::channel(PrinterSnapshot::default());
+                let (command_tx, command_rx) = mpsc::channel(8);
                 let worker_sender = sender.clone();
                 let worker_key = key.clone();
                 let task = tokio::spawn(async move {
-                    printer_worker(worker_key, worker_sender).await;
+                    printer_worker(worker_key, worker_sender, command_rx).await;
                 });
                 connections.insert(
                     key.clone(),
                     ConnectionEntry {
                         sender,
+                        command_tx,
                         refs: 1,
                         task,
                     },
@@ -195,6 +212,46 @@ impl SharedState {
             }
         }
     }
+
+    async fn press_down(&self, instance_id: &str) {
+        self.presses
+            .lock()
+            .await
+            .insert(instance_id.to_owned(), Instant::now());
+    }
+
+    async fn press_duration(&self, instance_id: &str) -> Duration {
+        self.presses
+            .lock()
+            .await
+            .remove(instance_id)
+            .map(|started| started.elapsed())
+            .unwrap_or_default()
+    }
+
+    async fn send_control(&self, instance_id: &str, command: PrinterCommand) -> bool {
+        let key = {
+            let bindings = self.bindings.lock().await;
+            let Some(binding) = bindings.get(instance_id) else {
+                return false;
+            };
+            binding.key.clone()
+        };
+
+        let (snapshot, tx) = {
+            let connections = self.connections.lock().await;
+            let Some(entry) = connections.get(&key) else {
+                return false;
+            };
+            (entry.sender.borrow().clone(), entry.command_tx.clone())
+        };
+
+        if !control_allowed(&snapshot, command) {
+            return false;
+        }
+
+        tx.send(command).await.is_ok()
+    }
 }
 
 struct BambuStatusAction {
@@ -222,12 +279,43 @@ impl Action for BambuStatusAction {
         self.shared.bind(instance, settings).await
     }
 
+    async fn key_down(
+        &self,
+        instance: &Instance,
+        _settings: &Self::Settings,
+    ) -> OpenActionResult<()> {
+        self.shared.press_down(&instance.instance_id).await;
+        Ok(())
+    }
+
+    async fn key_up(
+        &self,
+        instance: &Instance,
+        _settings: &Self::Settings,
+    ) -> OpenActionResult<()> {
+        let held = self.shared.press_duration(&instance.instance_id).await;
+        let command = if held >= Duration::from_secs(2) {
+            PrinterCommand::Resume
+        } else {
+            PrinterCommand::Pause
+        };
+
+        if self.shared.send_control(&instance.instance_id, command).await {
+            instance.show_ok().await?;
+        } else {
+            instance.show_alert().await?;
+        }
+
+        Ok(())
+    }
+
     async fn will_disappear(
         &self,
         instance: &Instance,
         _settings: &Self::Settings,
     ) -> OpenActionResult<()> {
         self.shared.unbind(&instance.instance_id).await;
+        self.shared.presses.lock().await.remove(&instance.instance_id);
         Ok(())
     }
 }
@@ -238,6 +326,11 @@ async fn render_instance(instance_id: &str, display_mode: &str, snapshot: Printe
     };
 
     let title = format_title(&snapshot, display_mode);
+    let image = background_image_data_url(&snapshot);
+
+    if let Err(error) = instance.set_image(Some(image), None).await {
+        log::warn!("Could not update Bambu status image: {error}");
+    }
     if let Err(error) = instance.set_title(Some(title), None).await {
         log::warn!("Could not update Bambu status title: {error}");
     }
@@ -304,6 +397,58 @@ fn format_title(snapshot: &PrinterSnapshot, display_mode: &str) -> String {
     lines.join("\n")
 }
 
+fn control_allowed(snapshot: &PrinterSnapshot, command: PrinterCommand) -> bool {
+    if !snapshot.connected {
+        return false;
+    }
+
+    let state = snapshot
+        .gcode_state
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+
+    match command {
+        PrinterCommand::Pause => state == "RUNNING",
+        PrinterCommand::Resume => matches!(state.as_str(), "PAUSE" | "PAUSED"),
+    }
+}
+
+fn background_color(snapshot: &PrinterSnapshot) -> &'static str {
+    if !snapshot.connected {
+        return "#424242";
+    }
+
+    if snapshot.print_error.unwrap_or(0) != 0 {
+        return "#C62828";
+    }
+
+    let state = snapshot
+        .gcode_state
+        .as_deref()
+        .unwrap_or("ONLINE")
+        .to_ascii_uppercase();
+
+    match state.as_str() {
+        "FAILED" | "FAIL" => "#C62828",
+        "FINISH" | "FINISHED" => "#1565C0",
+        "IDLE" => "#2E7D32",
+        "RUNNING" | "PAUSE" | "PAUSED" | "PREPARE" | "PREPARING" | "SLICING" => "#D4A017",
+        _ => "#424242",
+    }
+}
+
+fn solid_background_data_url(color: &str) -> String {
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144"><rect width="144" height="144" rx="18" fill="{color}"/><rect x="5" y="5" width="134" height="134" rx="14" fill="none" stroke="white" stroke-opacity=".16" stroke-width="2"/></svg>"#
+    );
+    format!("data:image/svg+xml;base64,{}", BASE64.encode(svg.as_bytes()))
+}
+
+fn background_image_data_url(snapshot: &PrinterSnapshot) -> String {
+    solid_background_data_url(background_color(snapshot))
+}
+
 fn format_duration(minutes: i64) -> String {
     let minutes = minutes.max(0);
     let hours = minutes / 60;
@@ -315,11 +460,15 @@ fn format_duration(minutes: i64) -> String {
     }
 }
 
-async fn printer_worker(key: PrinterKey, sender: watch::Sender<PrinterSnapshot>) {
+async fn printer_worker(
+    key: PrinterKey,
+    sender: watch::Sender<PrinterSnapshot>,
+    mut command_rx: mpsc::Receiver<PrinterCommand>,
+) {
     loop {
         sender.send_modify(|snapshot| snapshot.connected = false);
 
-        if let Err(error) = run_mqtt_session(&key, &sender).await {
+        if let Err(error) = run_mqtt_session(&key, &sender, &mut command_rx).await {
             log::warn!(
                 "Bambu MQTT disconnected for {} at {}: {}",
                 key.serial,
@@ -336,6 +485,7 @@ async fn printer_worker(key: PrinterKey, sender: watch::Sender<PrinterSnapshot>)
 async fn run_mqtt_session(
     key: &PrinterKey,
     sender: &watch::Sender<PrinterSnapshot>,
+    command_rx: &mut mpsc::Receiver<PrinterCommand>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut tls_builder = TlsConnector::builder();
     tls_builder
@@ -370,6 +520,11 @@ async fn run_mqtt_session(
             _ = refresh.tick() => {
                 request_pushall(&client, &request_topic).await?;
             }
+            command = command_rx.recv() => {
+                if let Some(command) = command {
+                    send_print_control(&client, &request_topic, command).await?;
+                }
+            }
             event = eventloop.poll() => {
                 match event? {
                     Event::Incoming(Incoming::ConnAck(_)) => {
@@ -389,6 +544,21 @@ async fn run_mqtt_session(
             }
         }
     }
+}
+
+async fn send_print_control(
+    client: &AsyncClient,
+    request_topic: &str,
+    command: PrinterCommand,
+) -> Result<(), rumqttc::ClientError> {
+    let payload: &'static [u8] = match command {
+        PrinterCommand::Pause => br#"{"print":{"sequence_id":"0","command":"pause"}}"#,
+        PrinterCommand::Resume => br#"{"print":{"sequence_id":"0","command":"resume"}}"#,
+    };
+
+    client
+        .publish(request_topic, QoS::AtMostOnce, false, payload)
+        .await
 }
 
 async fn request_pushall(
@@ -500,6 +670,54 @@ mod tests {
         assert_eq!(snapshot.remaining_minutes, Some(84));
         assert_eq!(snapshot.layer, Some(120));
         assert_eq!(snapshot.total_layers, Some(300));
+    }
+
+    #[test]
+    fn maps_status_colors() {
+        let ready = PrinterSnapshot {
+            connected: true,
+            gcode_state: Some("IDLE".into()),
+            ..Default::default()
+        };
+        let printing = PrinterSnapshot {
+            connected: true,
+            gcode_state: Some("RUNNING".into()),
+            ..Default::default()
+        };
+        let finished = PrinterSnapshot {
+            connected: true,
+            gcode_state: Some("FINISH".into()),
+            ..Default::default()
+        };
+        let error = PrinterSnapshot {
+            connected: true,
+            gcode_state: Some("FAILED".into()),
+            ..Default::default()
+        };
+
+        assert_eq!(background_color(&ready), "#2E7D32");
+        assert_eq!(background_color(&printing), "#D4A017");
+        assert_eq!(background_color(&finished), "#1565C0");
+        assert_eq!(background_color(&error), "#C62828");
+    }
+
+    #[test]
+    fn validates_pause_resume_states() {
+        let running = PrinterSnapshot {
+            connected: true,
+            gcode_state: Some("RUNNING".into()),
+            ..Default::default()
+        };
+        let paused = PrinterSnapshot {
+            connected: true,
+            gcode_state: Some("PAUSE".into()),
+            ..Default::default()
+        };
+
+        assert!(control_allowed(&running, PrinterCommand::Pause));
+        assert!(!control_allowed(&running, PrinterCommand::Resume));
+        assert!(control_allowed(&paused, PrinterCommand::Resume));
+        assert!(!control_allowed(&paused, PrinterCommand::Pause));
     }
 
     #[test]
