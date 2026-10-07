@@ -22,6 +22,20 @@ Fertig 12:18
 
 Other states are shown as `BEREIT`, `PAUSE`, `FERTIG`, `FEHLER`, `STARTET` or `OFFLINE`.
 
+### Status colors and key control
+
+- Green: ready / idle
+- Yellow: printing, preparing, slicing or paused
+- Blue: print finished
+- Red: printer error
+- Dark gray: offline / unknown
+
+The same key can control the active print:
+- Short press (release before 2 seconds): pause, only while the printer is `RUNNING`
+- Long press (hold for 2 seconds or more, then release): resume, only while the printer is `PAUSE`/`PAUSED`
+
+Invalid controls are not sent to the printer.
+
 ## How it works
 
 The plugin talks directly to the printer on the local network via MQTT over TLS on port 8883.
