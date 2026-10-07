@@ -151,12 +151,14 @@ impl SharedState {
         let display_mode = settings.display_mode.clone();
         let render_id = instance_id.clone();
         let render_task = tokio::spawn(async move {
-            render_instance(&render_id, &display_mode, receiver.borrow().clone()).await;
+            let snapshot = receiver.borrow().clone();
+            render_instance(&render_id, &display_mode, snapshot).await;
             loop {
                 if receiver.changed().await.is_err() {
                     break;
                 }
-                render_instance(&render_id, &display_mode, receiver.borrow().clone()).await;
+                let snapshot = receiver.borrow().clone();
+            render_instance(&render_id, &display_mode, snapshot).await;
             }
         });
 
