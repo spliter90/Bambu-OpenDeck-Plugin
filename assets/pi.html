@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bambu Status</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 14px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #202124;
+      color: #f1f3f4;
+      font-size: 13px;
+    }
+    .row { margin-bottom: 12px; }
+    label { display: block; margin-bottom: 5px; font-weight: 600; }
+    input, select {
+      width: 100%;
+      padding: 8px 9px;
+      border: 1px solid #5f6368;
+      border-radius: 6px;
+      background: #303134;
+      color: #f1f3f4;
+      outline: none;
+    }
+    input:focus, select:focus { border-color: #8ab4f8; }
+    .hint { margin-top: 5px; color: #bdc1c6; font-size: 11px; line-height: 1.35; }
+    .title { font-size: 15px; font-weight: 700; margin-bottom: 14px; }
+    .note {
+      padding: 9px;
+      border-radius: 6px;
+      background: #2a2b2e;
+      color: #d7dadc;
+      line-height: 1.4;
+    }
+  </style>
+  <script>
+    let socket;
+    let context;
+    let settings = {};
+    let saveTimer;
+
+    function connectOpenActionSocket(inPort, inPropertyInspectorUUID, inRegisterEvent, inInfo, inActionInfo) {
+      const actionInfo = JSON.parse(inActionInfo);
+      context = actionInfo.context;
+      settings = actionInfo.payload.settings || {};
+      socket = new WebSocket("ws://localhost:" + inPort);
+
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ event: inRegisterEvent, uuid: inPropertyInspectorUUID }));
+        fillForm();
+      };
+
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.event === "didReceiveSettings") {
+          settings = data.payload.settings || {};
+          fillForm();
+        }
+      };
+    }
+
+    const connectElgatoStreamDeckSocket = connectOpenActionSocket;
+
+    function fillForm() {
+      document.getElementById("host").value = settings.host || "";
+      document.getElementById("serial").value = settings.serial || "";
+      document.getElementById("access_code").value = settings.access_code || "";
+      document.getElementById("display_mode").value = settings.display_mode || "remaining";
+      document.getElementById("pushall_interval_secs").value = settings.pushall_interval_secs || 30;
+    }
+
+    function scheduleSave() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(save, 250);
+    }
+
+    function save() {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      settings = {
+        host: document.getElementById("host").value.trim(),
+        serial: document.getElementById("serial").value.trim(),
+        access_code: document.getElementById("access_code").value.trim(),
+        display_mode: document.getElementById("display_mode").value,
+        pushall_interval_secs: Math.max(10, Math.min(300, parseInt(document.getElementById("pushall_interval_secs").value || "30", 10)))
+      };
+      socket.send(JSON.stringify({
+        event: "setSettings",
+        context,
+        payload: settings
+      }));
+    }
+  </script>
+</head>
+<body>
+  <div class="title">Bambu-Lab-Drucker</div>
+
+  <div class="row">
+    <label for="host">IP-Adresse / Hostname</label>
+    <input id="host" placeholder="192.168.1.50" oninput="scheduleSave()" />
+  </div>
+
+  <div class="row">
+    <label for="serial">Seriennummer</label>
+    <input id="serial" placeholder="01P00A..." oninput="scheduleSave()" />
+    <div class="hint">Wird für das MQTT-Topic device/&lt;serial&gt;/report benötigt.</div>
+  </div>
+
+  <div class="row">
+    <label for="access_code">LAN Access Code</label>
+    <input id="access_code" type="password" autocomplete="off" placeholder="8-stelliger Code" oninput="scheduleSave()" />
+    <div class="hint">Benutzername ist automatisch bblp. Der Code wird nicht ins Plugin-Log geschrieben.</div>
+  </div>
+
+  <div class="row">
+    <label for="display_mode">Zeitanzeige</label>
+    <select id="display_mode" onchange="scheduleSave()">
+      <option value="remaining">Restzeit, z. B. 1h 24m</option>
+      <option value="finish">Endzeit, z. B. Fertig 12:18</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="pushall_interval_secs">Status-Snapshot alle</label>
+    <input id="pushall_interval_secs" type="number" min="10" max="300" step="5" oninput="scheduleSave()" />
+    <div class="hint">Sekunden. MQTT-Liveupdates werden zusätzlich sofort verarbeitet.</div>
+  </div>
+
+  <div class="note">
+    Verbindung: lokal über MQTT/TLS Port 8883. Das Plugin nutzt keine Bambu-Cloud.
+  </div>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "Name": "Bambu Status",
+  "Description": "Zeigt den Live-Status und die verbleibende Druckzeit eines Bambu-Lab-Druckers in OpenDeck an.",
+  "Author": "spliter90",
+  "Version": "0.1.0",
+  "Category": "Bambu Lab",
+  "Icon": "icon",
+  "OS": [
+    { "Platform": "windows", "MinimumVersion": "10" },
+    { "Platform": "mac", "MinimumVersion": "10.15" },
+    { "Platform": "linux" }
+  ],
+  "CodePaths": {
+    "x86_64-pc-windows-msvc": "opendeck-bambu-x86_64-pc-windows-msvc.exe",
+    "x86_64-apple-darwin": "opendeck-bambu-x86_64-apple-darwin",
+    "aarch64-apple-darwin": "opendeck-bambu-aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu": "opendeck-bambu-x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu": "opendeck-bambu-aarch64-unknown-linux-gnu"
+  },
+  "CodePathWin": "opendeck-bambu-x86_64-pc-windows-msvc.exe",
+  "CodePathMac": "opendeck-bambu-x86_64-apple-darwin",
+  "CodePathLin": "opendeck-bambu-x86_64-unknown-linux-gnu",
+  "PropertyInspectorPath": "pi.html",
+  "Actions": [
+    {
+      "UUID": "de.spliter90.bambu.status",
+      "Name": "Druckerstatus",
+      "Icon": "action",
+      "Tooltip": "Bambu-Status, Fortschritt und Restzeit anzeigen",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "PropertyInspectorPath": "pi.html",
+      "States": [
+        {
+          "Image": "action",
+          "Title": "BAMBU\nSTATUS"
+        }
+      ]
+    }
+  ]
+}

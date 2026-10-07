@@ -1,0 +1,82 @@
+name: Build OpenDeck Bambu Plugin
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            exe: .exe
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            exe: ""
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            exe: ""
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            exe: ""
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            exe: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Linux native TLS dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Test
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo test
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Assemble plugin (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLUGIN="de.spliter90.bambu.sdPlugin"
+          mkdir -p "dist/$PLUGIN"
+          cp -R assets/* "dist/$PLUGIN/"
+          cp "target/${{ matrix.target }}/release/opendeck-bambu" "dist/$PLUGIN/opendeck-bambu-${{ matrix.target }}"
+          chmod +x "dist/$PLUGIN/opendeck-bambu-${{ matrix.target }}"
+          (cd dist && zip -r "../opendeck-bambu-${{ matrix.target }}.zip" "$PLUGIN")
+
+      - name: Assemble plugin (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $plugin = "de.spliter90.bambu.sdPlugin"
+          New-Item -ItemType Directory -Force -Path "dist/$plugin" | Out-Null
+          Copy-Item -Recurse "assets/*" "dist/$plugin/"
+          Copy-Item "target/${{ matrix.target }}/release/opendeck-bambu.exe" "dist/$plugin/opendeck-bambu-${{ matrix.target }}.exe"
+          Compress-Archive -Path "dist/$plugin" -DestinationPath "opendeck-bambu-${{ matrix.target }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opendeck-bambu-${{ matrix.target }}
+          path: opendeck-bambu-${{ matrix.target }}.zip
